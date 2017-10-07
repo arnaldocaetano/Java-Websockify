@@ -54,13 +54,7 @@ import org.jboss.netty.handler.codec.http.HttpHeaders;
 import org.jboss.netty.handler.codec.http.HttpRequest;
 import org.jboss.netty.handler.codec.http.HttpResponse;
 import org.jboss.netty.handler.codec.http.HttpResponseStatus;
-import org.jboss.netty.handler.codec.http.websocketx.CloseWebSocketFrame;
-import org.jboss.netty.handler.codec.http.websocketx.PingWebSocketFrame;
-import org.jboss.netty.handler.codec.http.websocketx.PongWebSocketFrame;
-import org.jboss.netty.handler.codec.http.websocketx.TextWebSocketFrame;
-import org.jboss.netty.handler.codec.http.websocketx.WebSocketFrame;
-import org.jboss.netty.handler.codec.http.websocketx.WebSocketServerHandshaker;
-import org.jboss.netty.handler.codec.http.websocketx.WebSocketServerHandshakerFactory;
+import org.jboss.netty.handler.codec.http.websocketx.*;
 import org.jboss.netty.handler.ssl.SslHandler;
 import org.jboss.netty.handler.stream.ChunkedFile;
 import org.jboss.netty.util.CharsetUtil;
@@ -166,23 +160,23 @@ public class WebsockifyProxyHandler extends SimpleChannelUpstreamHandler {
             return;
         }
 
-        String upgradeHeader = req.getHeader("Upgrade");
+        String upgradeHeader = req.headers().get("Upgrade");
         if(upgradeHeader != null && upgradeHeader.toUpperCase().equals("WEBSOCKET")){
 			Logger.getLogger(WebsockifyProxyHandler.class.getName()).fine("Websocket request from " + e.getRemoteAddress() + ".");
 	        // Handshake
 	        WebSocketServerHandshakerFactory wsFactory = new WebSocketServerHandshakerFactory(
-	                this.getWebSocketLocation(req), "base64", false);
+	                this.getWebSocketLocation(req), "binary", false);
 	        this.handshaker = wsFactory.newHandshaker(req);
 	        if (this.handshaker == null) {
 	            wsFactory.sendUnsupportedWebSocketVersionResponse(ctx.getChannel());
 	        } else {
 	        	// deal with a bug in the flash websocket emulation
 	        	// it specifies WebSocket-Protocol when it seems it should specify Sec-WebSocket-Protocol
-	        	String protocol = req.getHeader("WebSocket-Protocol");
-	        	String secProtocol = req.getHeader("Sec-WebSocket-Protocol");
+	        	String protocol = req.headers().get("WebSocket-Protocol");
+	        	String secProtocol = req.headers().get("Sec-WebSocket-Protocol");
 	        	if(protocol != null && secProtocol == null )
 	        	{
-	        		req.addHeader("Sec-WebSocket-Protocol", protocol);
+	        		req.headers().add("Sec-WebSocket-Protocol", protocol);
 	        	}
 	            this.handshaker.handshake(ctx.getChannel(), req);
 	        }
@@ -194,7 +188,7 @@ public class WebsockifyProxyHandler extends SimpleChannelUpstreamHandler {
 		    if ( redirectUrl != null) {
 				Logger.getLogger(WebsockifyProxyHandler.class.getName()).fine("Redirecting to " + redirectUrl + ".");
 		        HttpResponse response = new DefaultHttpResponse(HTTP_1_1, TEMPORARY_REDIRECT);
-		        response.setHeader(HttpHeaders.Names.LOCATION, redirectUrl);
+		        response.headers().set(HttpHeaders.Names.LOCATION, redirectUrl);
 	            sendHttpResponse(ctx, req, response);
 	            return;
 		    }
@@ -213,15 +207,15 @@ public class WebsockifyProxyHandler extends SimpleChannelUpstreamHandler {
         } else if (frame instanceof PingWebSocketFrame) {
             ctx.getChannel().write(new PongWebSocketFrame(frame.getBinaryData()));
             return;
-        } else if (!(frame instanceof TextWebSocketFrame)) {
+        } else if (!(frame instanceof BinaryWebSocketFrame)) {
             throw new UnsupportedOperationException(String.format("%s frame types not supported", frame.getClass()
                     .getName()));
         }
         
-        ChannelBuffer msg = ((TextWebSocketFrame) frame).getBinaryData();
-        ChannelBuffer decodedMsg = Base64.decode(msg);
+        ChannelBuffer msg = ((BinaryWebSocketFrame) frame).getBinaryData();
+        //ChannelBuffer decodedMsg = Base64.decode(msg);
         synchronized (trafficLock) {
-            outboundChannel.write(decodedMsg);
+            outboundChannel.write(msg);
             // If outboundChannel is saturated, do not read until notified in
             // OutboundHandler.channelInterestChanged().
             if (!outboundChannel.isWritable()) {
@@ -262,7 +256,7 @@ public class WebsockifyProxyHandler extends SimpleChannelUpstreamHandler {
         }
 
         // Cache Validation
-        String ifModifiedSince = request.getHeader(HttpHeaders.Names.IF_MODIFIED_SINCE);
+        String ifModifiedSince = request.headers().get(HttpHeaders.Names.IF_MODIFIED_SINCE);
         if (ifModifiedSince != null && !ifModifiedSince.equals("")) {
             SimpleDateFormat dateFormatter = new SimpleDateFormat(HTTP_DATE_FORMAT, Locale.US);
             Date ifModifiedSinceDate = dateFormatter.parse(ifModifiedSince);
@@ -396,7 +390,7 @@ public class WebsockifyProxyHandler extends SimpleChannelUpstreamHandler {
 
     private void sendError(ChannelHandlerContext ctx, HttpResponseStatus status) {
         HttpResponse response = new DefaultHttpResponse(HTTP_1_1, status);
-        response.setHeader(CONTENT_TYPE, "text/plain; charset=UTF-8");
+        response.headers().set(CONTENT_TYPE, "text/plain; charset=UTF-8");
         response.setContent(ChannelBuffers.copiedBuffer(
                 "Failure: " + status.toString() + "\r\n",
                 CharsetUtil.UTF_8));
@@ -430,7 +424,7 @@ public class WebsockifyProxyHandler extends SimpleChannelUpstreamHandler {
         dateFormatter.setTimeZone(TimeZone.getTimeZone(HTTP_DATE_GMT_TIMEZONE));
 
         Calendar time = new GregorianCalendar();
-        response.setHeader(HttpHeaders.Names.DATE, dateFormatter.format(time.getTime()));
+        response.headers().set(HttpHeaders.Names.DATE, dateFormatter.format(time.getTime()));
     }
     
     /**
@@ -447,13 +441,13 @@ public class WebsockifyProxyHandler extends SimpleChannelUpstreamHandler {
 
         // Date header
         Calendar time = new GregorianCalendar();
-        response.setHeader(HttpHeaders.Names.DATE, dateFormatter.format(time.getTime()));
+        response.headers().set(HttpHeaders.Names.DATE, dateFormatter.format(time.getTime()));
 
         // Add cache headers
         time.add(Calendar.SECOND, HTTP_CACHE_SECONDS);
-        response.setHeader(HttpHeaders.Names.EXPIRES, dateFormatter.format(time.getTime()));
-        response.setHeader(HttpHeaders.Names.CACHE_CONTROL, "private, max-age=" + HTTP_CACHE_SECONDS);
-        response.setHeader(HttpHeaders.Names.LAST_MODIFIED, dateFormatter.format(new Date(fileToCache.lastModified())));
+        response.headers().set(HttpHeaders.Names.EXPIRES, dateFormatter.format(time.getTime()));
+        response.headers().set(HttpHeaders.Names.CACHE_CONTROL, "private, max-age=" + HTTP_CACHE_SECONDS);
+        response.headers().set(HttpHeaders.Names.LAST_MODIFIED, dateFormatter.format(new Date(fileToCache.lastModified())));
     }
 
     /**
@@ -466,16 +460,16 @@ public class WebsockifyProxyHandler extends SimpleChannelUpstreamHandler {
      */
     private void setContentTypeHeader(HttpResponse response, File file) {
         MimetypesFileTypeMap mimeTypesMap = new MimetypesFileTypeMap();
-        response.setHeader(HttpHeaders.Names.CONTENT_TYPE, mimeTypesMap.getContentType(file.getPath()));
+        response.headers().set(HttpHeaders.Names.CONTENT_TYPE, mimeTypesMap.getContentType(file.getPath()));
     }
 
     private String getWebSocketLocation(HttpRequest req) {
         String prefix = "ws";
-        String origin = req.getHeader(HttpHeaders.Names.ORIGIN).toLowerCase();
+        String origin = req.headers().get(HttpHeaders.Names.ORIGIN).toLowerCase();
         if(origin.contains("https")){
             prefix = "wss";
         }
-        return prefix + "://" + req.getHeader(HttpHeaders.Names.HOST) + req.getUri();
+        return prefix + "://" + req.headers().get(HttpHeaders.Names.HOST) + req.getUri();
     }
 
     @Override
